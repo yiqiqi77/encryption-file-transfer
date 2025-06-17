@@ -3,14 +3,10 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import os
 from encryption_core import (
     encrypt_with_aes, decrypt_with_aes,
-    generate_rsa_keys, encrypt_with_rsa_aes, decrypt_with_rsa_aes,
-    sha256sum, sign_file, verify_signature
+    encrypt_with_rsa_aes, decrypt_with_rsa_aes
 )
-import socket
-import threading
-import shutil
-import tempfile
-import zipfile
+from network_transfer import NetworkTransfer  # 导入网络传输模块
+from security_tools import SecurityTools  # 导入安全工具模块
 
 
 class SecureZipApp:
@@ -22,24 +18,27 @@ class SecureZipApp:
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)  # 绑定窗口关闭事件
 
+        # 初始化网络传输模块
+        self.network_transfer = NetworkTransfer(
+            on_status_update=self.show_status_message,
+            on_file_received=self.choose_file_save_path
+        )
+
+        # 初始化安全工具模块
+        self.security_tools = SecurityTools(
+            on_status_update=self.show_status_message
+        )
+
         # 连接状态标记
-        self.is_listening = False
-        self.is_connected = False
-        self.client_socket = None
-        self.server_socket = None
-        self.listening_thread = None
-        self.receive_thread = None
-        self.suppress_status_messages = False  # 新增：控制是否显示状态消息
+        self.path = ''  # 存储选择的文件/文件夹路径
+        self.output_dir = os.getcwd()  # 默认输出目录为当前工作目录
+        self.use_default_output_dir = tk.BooleanVar(value=True)  # 是否使用默认输出目录的标记
 
         # 配置界面样式
         style = ttk.Style()
         style.configure("TButton", font=("微软雅黑", 10), padding=6)
         style.configure("TLabel", font=("微软雅黑", 10))
         style.configure("TCheckbutton", font=("微软雅黑", 10))
-
-        self.path = ''  # 存储选择的文件/文件夹路径
-        self.output_dir = os.getcwd()  # 默认输出目录为当前工作目录
-        self.use_default_output_dir = tk.BooleanVar(value=True)  # 是否使用默认输出目录的标记
 
         self.setup_ui()  # 初始化用户界面
 
@@ -141,13 +140,14 @@ class SecureZipApp:
     def setup_network_tab(self):
         """设置文件传输标签页界面"""
         # 创建独立的监听和连接按钮
-        ttk.Button(self.network_tab, text="开始监听", command=self.start_listening, width=20).grid(row=0, column=0,
-                                                                                                   pady=8)
-        ttk.Button(self.network_tab, text="连接到IP", command=self.connect_to_ip, width=20).grid(row=1, column=0,
+        ttk.Button(self.network_tab, text="等待连接", command=self.network_transfer.start_listening, width=20).grid(
+            row=0, column=0, pady=8)
+        ttk.Button(self.network_tab, text="建立连接", command=self.connect_to_ip, width=20).grid(row=1, column=0,
                                                                                                  pady=8)
         ttk.Button(self.network_tab, text="发送文件", command=self.send_file, width=20).grid(row=2, column=0, pady=8)
-        ttk.Button(self.network_tab, text="关闭连接", command=self.close_connection, width=20).grid(row=3, column=0,
-                                                                                                    pady=8)
+        ttk.Button(self.network_tab, text="关闭连接", command=self.network_transfer.close_connection, width=20).grid(
+            row=3, column=0, pady=8)
+
         # 选择是否使用默认输出目录的复选框
         ttk.Checkbutton(self.network_tab, text="保存至默认输出目录", variable=self.use_default_output_dir).grid(row=4,
                                                                                                                 column=0,
@@ -212,9 +212,8 @@ class SecureZipApp:
         """生成RSA密钥对"""
         folder = filedialog.askdirectory(title="选择保存密钥的文件夹")
         if folder:
-            # 调用加密核心模块的RSA密钥生成函数
-            generate_rsa_keys(folder)
-            messagebox.showinfo("完成", "密钥生成成功")
+            # 调用安全工具模块的RSA密钥生成函数
+            self.security_tools.generate_rsa_keys(folder)
 
     def rsa_encrypt(self):
         """使用RSA+AES混合加密文件"""
@@ -255,9 +254,8 @@ class SecureZipApp:
     def sha256_calc(self):
         """计算文件的SHA256哈希值"""
         if self.path:
-            # 调用加密核心模块的SHA256计算函数
-            hash_val = sha256sum(self.path)
-            messagebox.showinfo("SHA256 校验码", hash_val)
+            # 调用安全工具模块的SHA256计算函数
+            self.security_tools.calculate_sha256(self.path)
         else:
             messagebox.showwarning("提示", "请先选择文件")
 
@@ -269,12 +267,8 @@ class SecureZipApp:
         # 选择RSA私钥文件
         priv = filedialog.askopenfilename(title="选择私钥", filetypes=[("PEM", "*.pem")])
         if priv:
-            try:
-                # 调用加密核心模块的签名函数
-                sign_file(self.path, priv)
-                messagebox.showinfo("完成", "文件签名已生成")
-            except Exception as e:
-                messagebox.showerror("失败", str(e))
+            # 调用安全工具模块的签名函数
+            self.security_tools.sign_file(self.path, priv)
 
     def verify(self):
         """验证文件的数字签名"""
@@ -283,134 +277,25 @@ class SecureZipApp:
         sigpath = filedialog.askopenfilename(title="选择签名文件", filetypes=[("SIG", "*.sig")])
         pub = filedialog.askopenfilename(title="选择公钥", filetypes=[("PEM", "*.pem")])
         if filepath and sigpath and pub:
-            try:
-                # 调用加密核心模块的签名验证函数
-                valid = verify_signature(filepath, sigpath, pub)
-                messagebox.showinfo("验证结果", "签名验证通过" if valid else "签名验证未通过")
-            except Exception as e:
-                messagebox.showerror("验证失败", str(e))
-
-    def start_listening(self):
-        """启动监听模式(服务器端)"""
-        if self.is_listening or self.is_connected:
-            messagebox.showinfo("状态", "已处于连接或监听状态")
-            return
-
-        try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', 12345))
-            self.server_socket.listen(1)
-            self.server_socket.settimeout(1)  # 设置超时，实现非阻塞监听
-            self.is_listening = True
-
-            messagebox.showinfo("监听状态", "正在监听端口12345...")
-            self.listening_thread = threading.Thread(target=self.accept_connections, daemon=True)
-            self.listening_thread.start()
-
-        except Exception as e:
-            messagebox.showerror("监听失败", f"监听启动失败: {str(e)}")
-            self.stop_listening()
-
-    def accept_connections(self):
-        """接受客户端连接(监听线程)"""
-        while self.is_listening and self.server_socket:
-            try:
-                conn, addr = self.server_socket.accept()
-                self.stop_listening()  # 停止监听
-                self.client_socket = conn
-                self.is_connected = True
-
-                self.root.after(0, lambda: messagebox.showinfo("连接成功", f"已连接: {addr[0]}:{addr[1]}"))
-                self.start_receive_thread()  # 启动接收线程
-
-            except socket.timeout:
-                continue  # 超时继续检查退出标志
-            except Exception as e:
-                if self.is_listening:
-                    self.root.after(0, lambda: messagebox.showerror("连接错误", str(e)))
-                break
-
-        self.root.after(0, self.update_connection_buttons)
+            # 调用安全工具模块的签名验证函数
+            self.security_tools.verify_signature(filepath, sigpath, pub)
 
     def connect_to_ip(self):
         """连接到指定IP(客户端)"""
-        if self.is_listening or self.is_connected:
-            messagebox.showinfo("状态", "已处于连接或监听状态")
-            return
-
         ip = simpledialog.askstring("连接设置", "请输入对方IP地址:")
-        if not ip:
-            return
+        if ip:
+            self.network_transfer.connect_to_ip(ip)
 
-        try:
-            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.connect((ip, 12345))
-            self.is_connected = True
-
-            messagebox.showinfo("连接成功", f"已连接到 {ip}:12345")
-            self.start_receive_thread()  # 启动接收线程
-
-        except Exception as e:
-            messagebox.showerror("连接失败", f"连接到 {ip} 失败: {str(e)}")
-            self.close_connection()
-
-        self.update_connection_buttons()
-
-    def start_receive_thread(self):
-        """启动文件接收线程"""
-        self.receive_thread = threading.Thread(target=self.receive_files, daemon=True)
-        self.receive_thread.start()
-
-    def receive_files(self):
-        """文件接收线程"""
-        try:
-            while self.is_connected and self.client_socket:
-                try:
-                    # 接收文件元数据
-                    name_len_bytes = self.client_socket.recv(4)
-                    if not name_len_bytes or not self.is_connected:
-                        break
-                    name_len = int.from_bytes(name_len_bytes, 'big')
-                    filename = self.client_socket.recv(name_len).decode()
-
-                    size_bytes = self.client_socket.recv(8)
-                    if not size_bytes or not self.is_connected:
-                        break
-                    filesize = int.from_bytes(size_bytes, 'big')
-
-                    # 选择保存路径
-                    save_dir = self.output_dir if self.use_default_output_dir.get() else filedialog.askdirectory()
-                    if not save_dir or not self.is_connected:
-                        return
-
-                    filepath = os.path.join(save_dir, filename)
-                    with open(filepath, 'wb') as f:
-                        remaining = filesize
-                        while remaining > 0 and self.is_connected:
-                            chunk = self.client_socket.recv(min(4096, remaining))
-                            if not chunk or not self.is_connected:
-                                break
-                            f.write(chunk)
-                            remaining -= len(chunk)
-
-                    if self.is_connected:
-                        self.root.after(0, lambda: messagebox.showinfo("接收完成", f"文件已保存: {filepath}"))
-
-                except (ConnectionResetError, socket.timeout):
-                    self.root.after(0, lambda: messagebox.showinfo("连接断开", "对方已断开连接"))
-                    break
-                except Exception as e:
-                    if self.is_connected:
-                        self.root.after(0, lambda: messagebox.showerror("接收错误", str(e)))
-                    break
-
-        finally:
-            self.close_connection()
+    def choose_file_save_path(self, filename):
+        """选择文件保存路径(供网络传输模块调用)"""
+        save_dir = self.output_dir if self.use_default_output_dir.get() else filedialog.askdirectory()
+        if not save_dir:
+            return None
+        return os.path.join(save_dir, filename)
 
     def send_file(self):
         """通过网络发送文件"""
-        if not self.client_socket:
+        if not self.network_transfer.client_socket:
             messagebox.showwarning("未连接", "请先建立连接")
             return
 
@@ -423,90 +308,37 @@ class SecureZipApp:
         if mode is None:
             return
 
-        tmp_dir = tempfile.mkdtemp()  # 创建临时目录用于处理文件
-        try:
-            if mode:
-                # 加密模式：使用RSA+AES混合加密
-                pub_path = filedialog.askopenfilename(title="选择对方公钥", filetypes=[("PEM", "*.pem")])
-                if not pub_path:
-                    messagebox.showwarning("提示", "未选择公钥")
-                    return
-                # 调用混合加密函数并获取加密后的文件路径
-                send_path = encrypt_with_rsa_aes(self.path, pub_path, tmp_dir)
-                filename = os.path.basename(send_path)
-            else:
-                # 明文模式：如果是文件夹则先压缩
-                if os.path.isdir(self.path):
-                    zip_path = os.path.join(tmp_dir, 'plain_folder')
-                    shutil.make_archive(zip_path, 'zip', self.path)
-                    send_path = zip_path + '.zip'
-                else:
-                    # 复制文件到临时目录
-                    send_path = os.path.join(tmp_dir, os.path.basename(self.path))
-                    shutil.copy(self.path, send_path)
-                filename = os.path.basename(send_path)
+        pub_key_path = None
+        if mode:
+            # 加密模式：选择对方公钥
+            pub_key_path = filedialog.askopenfilename(title="选择对方公钥", filetypes=[("PEM", "*.pem")])
+            if not pub_key_path:
+                messagebox.showwarning("提示", "未选择公钥")
+                return
 
-            # 读取文件数据
-            with open(send_path, 'rb') as f:
-                data = f.read()
+        # 调用网络传输模块的发送文件功能
+        self.network_transfer.send_file(
+            self.path,
+            use_encryption=mode,
+            pub_key_path=pub_key_path,
+            save_dir=None  # 使用临时目录
+        )
 
-            # 发送文件元数据和内容(协议设计)
-            self.client_socket.send(len(filename.encode()).to_bytes(4, 'big'))
-            self.client_socket.send(filename.encode())
-            self.client_socket.send(len(data).to_bytes(8, 'big'))
-            self.client_socket.sendall(data)
-
-            messagebox.showinfo("发送完成", f"文件已发送：{filename}")
-        except Exception as e:
-            messagebox.showerror("发送失败", str(e))
-        finally:
-            # 清理临时文件
-            shutil.rmtree(tmp_dir)
-
-    def stop_listening(self):
-        """停止监听"""
-        self.is_listening = False
-        if self.server_socket:
-            self.server_socket.close()
-            self.server_socket = None
-
-    def close_connection(self):
-        """关闭所有连接"""
-        self.is_connected = False
-        self.is_listening = False
-
-        if self.client_socket:
-            try:
-                self.client_socket.close()
-            except:
-                pass
-            self.client_socket = None
-
-        self.stop_listening()
-
-        # 只有在非退出程序时才更新状态消息
-        if not self.suppress_status_messages:
-            self.update_connection_buttons()
-        else:
-            # 程序退出时不显示消息
-            pass
-
-    def update_connection_buttons(self):
-        """更新按钮状态"""
-        # 仅在不抑制消息时显示状态
-        if not self.suppress_status_messages:
-            if self.is_connected:
-                messagebox.showinfo("当前状态", "已连接，可发送/接收文件")
-            elif self.is_listening:
-                messagebox.showinfo("当前状态", "正在监听，等待连接...")
-            else:
-                messagebox.showinfo("当前状态", "未连接")
+    def show_status_message(self, message, status_type="info"):
+        """显示状态消息(供网络传输模块和安全工具模块回调)"""
+        # 根据状态类型显示不同的消息框
+        if status_type == "info":
+            messagebox.showinfo("状态", message)
+        elif status_type == "warning":
+            messagebox.showwarning("警告", message)
+        elif status_type == "error":
+            messagebox.showerror("错误", message)
 
     def on_closing(self):
         """窗口关闭时清理资源"""
         # 设置标志以抑制状态消息
-        self.suppress_status_messages = True
-        self.close_connection()
+        self.network_transfer.set_suppress_messages(True)
+        self.network_transfer.close_connection()
         self.root.destroy()
 
 
