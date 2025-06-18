@@ -5,8 +5,7 @@ from encryption_core import (
     verify_signature,
     sha256sum
 )
-import tempfile
-import shutil
+import logging
 
 
 class SecurityTools:
@@ -17,22 +16,49 @@ class SecurityTools:
             on_status_update: 状态更新回调函数
         """
         self.on_status_update = on_status_update
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
 
     def generate_rsa_keys(self, output_dir):
-        """生成RSA密钥对
+        """生成RSA密钥对（不加密私钥）
 
         参数:
             output_dir: 密钥对保存目录
+
+        返回:
+            (private_key_path, public_key_path): 密钥文件路径元组，失败时返回(None, None)
         """
         try:
+            # 确保输出目录存在
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
+                self.logger.info(f"创建密钥保存目录: {output_dir}")
 
-            private_key_path, public_key_path = generate_rsa_keys(output_dir)
-            self._show_status(f"RSA密钥对已生成:\n私钥: {private_key_path}\n公钥: {public_key_path}", "info")
+            # 调用底层密钥生成函数（不传递密码参数）
+            generate_rsa_keys(output_dir)
+
+            # 构建密钥文件完整路径
+            private_key_path = os.path.join(output_dir, "private_key.pem")
+            public_key_path = os.path.join(output_dir, "public_key.pem")
+
+            # 验证文件是否生成成功
+            if not all([os.path.exists(private_key_path), os.path.exists(public_key_path)]):
+                raise FileNotFoundError("密钥文件生成失败")
+
+            # 生成成功提示
+            status_msg = "RSA密钥对已生成:\n"
+            status_msg += f"私钥: {private_key_path}\n"
+            status_msg += f"公钥: {public_key_path}"
+
+            self._show_status(status_msg, "info")
+            self.logger.info(status_msg)
+
             return private_key_path, public_key_path
+
         except Exception as e:
-            self._show_status(f"生成密钥对失败: {str(e)}", "error")
+            error_msg = f"生成RSA密钥对失败: {str(e)}"
+            self._show_status(error_msg, "error")
+            self.logger.error(error_msg)
             return None, None
 
     def sign_file(self, file_path, private_key_path):
@@ -41,6 +67,9 @@ class SecurityTools:
         参数:
             file_path: 要签名的文件路径
             private_key_path: 私钥文件路径
+
+        返回:
+            bool: 签名是否成功
         """
         try:
             if not os.path.exists(file_path):
@@ -97,7 +126,7 @@ class SecurityTools:
             file_path: 文件路径
 
         返回:
-            str: 文件的SHA256哈希值
+            str: 文件的SHA256哈希值，失败时返回None
         """
         try:
             if not os.path.exists(file_path):
@@ -112,6 +141,19 @@ class SecurityTools:
             return None
 
     def _show_status(self, message, status_type="info"):
-        """显示状态消息(通过回调函数)"""
+        """显示状态消息(通过回调函数)
+
+        参数:
+            message: 状态消息内容
+            status_type: 状态类型(info/warning/error)
+        """
         if self.on_status_update:
             self.on_status_update(message, status_type)
+        # 同时记录到日志
+        if status_type == "info":
+            self.logger.info(message)
+        elif status_type == "warning":
+            self.logger.warning(message)
+        elif status_type == "error":
+            self.logger.error(message)
+
